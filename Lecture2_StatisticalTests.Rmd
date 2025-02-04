@@ -1,0 +1,105 @@
+---
+title: "Lecture2_StatisticalTesting"
+author: "Badri V"
+date: "September 19, 2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+```{r}
+load("./ncbirths.rda")
+dim(ncbirths)
+colnames(ncbirths)
+head(ncbirths)
+summary(ncbirths)
+mean(ncbirths$mage)
+median(ncbirths$mage)
+
+mode <- function(x) {
+   return(as.numeric(names(which.max(table(x)))))
+}
+
+mode(ncbirths$mage)
+```
+
+
+```{r}
+####Categorical data analysis- Chi-square tests
+### Titanic dataset
+
+titanic<-as.data.frame(rbind(c(123,200),c(158,119),c(528,181)))
+#titanic<-as.data.frame(rbind(c(226,400),c(306,238),c(1056,362)))
+colnames(titanic)<-c("died","survived")
+rownames(titanic)<-c("class1","class2","class3")
+t<-chisq.test(titanic)
+names(t)
+```
+
+```{r}
+###Comparing means  (T-test)
+
+sleep1<-subset(sleep,sleep$group==1)
+sleep2<-subset(sleep,sleep$group==2)
+boxplot(sleep1$extra,sleep2$extra)
+plot(density(sleep$extra))
+x<-t.test(sleep1$extra,
+            sleep2$extra, paired = TRUE)
+plot(density(sleep1$extra-sleep2$extra))
+
+```
+```{r}
+##correlation and regression
+load("./ncbirths.rda")
+dim(ncbirths)
+colnames(ncbirths)
+head(ncbirths)
+summary(ncbirths)
+table(ncbirths$mature)
+table(ncbirths$habit)
+
+
+
+##relationship between gestational age and birthweight
+plot(ncbirths$weeks, ncbirths$weight, main="Gestational Age vs Birth Weight",
+   xlab="Gestational Age (in weeks)", ylab="Birth Weight", pch=19)
+
+cor(ncbirths$weeks, ncbirths$weight,use="pairwise.complete.obs")
+
+plot(ncbirths$weeks, ncbirths$weight, main="Gestational Age vs Birth Weight",
+   xlab="Gestational Age (in weeks)", ylab="Birth Weight", pch=19)
+abline(lm(ncbirths$weight ~ ncbirths$weeks), col = "red")
+
+reg.output<-lm(ncbirths$weight ~ ncbirths$weeks)
+summary(reg.output)
+plot(density(resid(reg.output)))
+```
+
+```{r}
+### relationship between mothers pre-pregnancy weight gain and birth weight 
+
+plot(ncbirths$gained, ncbirths$weight, main="Weight gained by mother during pregnancy vs Birth Weight",
+   xlab="Weight gained by mother during pregnancy (in pounds)", ylab="Birth Weight", pch=19)
+
+cor(ncbirths$gained, ncbirths$weight,use="pairwise.complete.obs")
+
+plot(ncbirths$gained, ncbirths$weight, main="Weight gained by mother during pregnancy vs Birth Weight",
+   xlab="Weight gained by mother during pregnancy (in pounds)", ylab="Birth Weight", pch=19)
+abline(lm(ncbirths$weight ~ ncbirths$gained), col = "red")
+
+reg.output<-lm(ncbirths$weight ~ ncbirths$gained)
+summary(reg.output)
+plot(density(resid(reg.output)))
+
+
+```
+
+
+
