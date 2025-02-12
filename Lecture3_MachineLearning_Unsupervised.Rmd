@@ -1,0 +1,199 @@
+title: "Lecture 3 - Unsupervised_Learning"
+output: html_document
+date: "2023-09-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Part 2 - Unsupervised analysis
+
+##Install packages as needed
+```{r}
+packages_to_install=c("ggplot2","ggrepel","dendextend")
+install.packages(setdiff(packages_to_install, rownames(installed.packages())))
+rm(packages_to_install)
+```
+
+##Load packages
+```{r}
+require(ggplot2)
+require(ggrepel)
+require(dendextend)
+```
+
+##Load animal attribute data set
+```{r}
+animaldata=read.csv("Lecture3_animaltable.csv",as.is=T,header=T,row.names=1)
+```
+
+##Explore the data set using "head" or "summary" or in the workspace
+```{r}
+##Write your code here
+head(animaldata)
+table(animaldata$type)
+```
+
+##Step 1: separate categories from data matrix, assign colors to each category
+```{r}
+animalmat=animaldata[,-17]
+animalcategories=animaldata[,17]
+names(animalcategories)=rownames(animalmat)
+colvec=c("red","orange","darkgreen","blue","steelblue","purple","black")
+plotcolors=colvec[as.numeric(as.factor(animalcategories))]
+```
+
+##Step 2: Dimensionality reduction using PCA
+```{r}
+pr1=prcomp(animalmat)
+```
+
+##Explore the PCA output using head/summary/environment window
+```{r}
+##Write your code here
+```
+
+##Step 3: Examine the proportion of variance
+```{r}
+pcsummary=summary(pr1)
+barplot(pcsummary$importance[2,])
+```
+
+##Step 4: Examine feature loadings for PC1
+```{r}
+barplot(pr1$rotation[,1],las=2,ylab="PC1 loading")
+```
+
+##Exercise: Examine feature loadings for PC2, PC3, and PC4
+```{r}
+##Write your code here
+```
+
+
+##Step 4: Plot the animals in PC space
+```{r}
+###This is complicated plotting code using ggplot - it allows for much more flexibility, but takes some practice to get used to
+pcs_to_plot=c(1,2)
+
+dat = data.frame(pr1$x[,pcs_to_plot])
+dat$animal=rownames(dat)
+p <- ggplot(dat, aes(PC1, PC2, label = animal)) +
+  geom_point(color = plotcolors)
+p2 <- p + geom_text_repel(max.overlaps = 80) + theme_bw()
+p2
+```
+
+##Exercise: try plotting PC2 and PC3, and then PC3 and PC4
+```{r}
+###Modify the code below
+pcs_to_plot=c(1,2)
+
+dat = data.frame(pr1$x[,pcs_to_plot])
+dat$animal=rownames(dat)
+p <- ggplot(dat, aes(PC1, PC2, label = animal)) +   ##this line also needs to be modified
+  geom_point(color = plotcolors)
+p2 <- p + geom_text_repel(max.overlaps = 80) + theme_bw()
+p2
+```
+
+
+##Step 5: Testing out clustering of animals using hierarchical clustering
+```{r}
+##Hierarchical clustering without dimensionality reduction
+###Specify a distance metric and a grouping method - here, use Euclidean distance and complete linkage
+#By default, the hcluster function clusters the rows of a data.frame
+distance_values = dist(animalmat,method = "euclidean")
+clustering = hclust(distance_values,method = "complete")
+dendrogram1 = as.dendrogram(clustering)
+labels_colors(dendrogram1) = plotcolors[order.dendrogram(dendrogram1)]
+plot(dendrogram1)
+```
+
+###Try playing around with various grouping methods
+```{r}
+grouping_method = "single"   ###possible choices: "single", "average", "complete", "ward.D"
+distance_values = dist(animalmat,method = "euclidean")
+clustering = hclust(distance_values,method = grouping_method)
+dendrogram1 = as.dendrogram(clustering)
+labels_colors(dendrogram1) = plotcolors[order.dendrogram(dendrogram1)]
+plot(dendrogram1)
+```
+
+##Cutting the tree to generate a specific number of clusters
+```{r}
+###Generate hierarchical tree
+distance_values = dist(animalmat,method = "euclidean")
+clustering <- hclust(distance_values,method = "complete")
+dendrogram1 = as.dendrogram(clustering)
+labels_colors(dendrogram1) = plotcolors[order.dendrogram(dendrogram1)]
+plot(dendrogram1)
+
+
+###Cut the tree to get 7 clusters
+clusters <- cutree(clustering,k = 7)
+hclust_correlation_complete_7=data.frame(cluster=clusters[clustering$order])
+hclust_correlation_complete_7
+```
+
+##Cutting the tree at a specific height (distance metric)
+```{r}
+###Generate hierarchical tree
+distance_values = dist(animalmat,method = "euclidean")
+clustering <- hclust(distance_values,method = "complete")
+dendrogram1 = as.dendrogram(clustering)
+labels_colors(dendrogram1) = plotcolors[order.dendrogram(dendrogram1)]
+plot(dendrogram1)
+
+###Cut the tree at a specific height (3)
+abline(h=3,lty=2)
+clusters <- cutree(clustering, h=3)
+hclust_correlation_complete_3=data.frame(cluster=clusters[clustering$order])
+hclust_correlation_complete_3
+```
+
+##Check how well these clusters recapitulate the known classes
+```{r}
+table(hclust_correlation_complete_7[,1],animalcategories[rownames(hclust_correlation_complete_7)])
+```
+
+
+
+
+##K-means clustering
+###The default distance metric is the Euclidean distance, whereas the algorithm can be selected
+###Note that k-means clustering has randomness, since the initial cluster centers are selected randomly - to ensure reproducibility, need to set a random seed
+```{r}
+set.seed(0) ###setting the random seed
+###k-means clustering, specifying 7 clusters
+clustering_kmeans=kmeans(animalmat,center=7)
+kmeans_7=data.frame(cluster=clustering_kmeans$cluster[order(clustering_kmeans$cluster)])
+kmeans_7
+```
+##Check how well these clusters recapitulate the known classes
+```{r}
+table(kmeans_7[,1],animalcategories[rownames(kmeans_7)])
+```
+##Visualize k means clusters on the reduced dimension PCA plot
+```{r}
+pcs_to_plot=c(1,2)
+
+dat = data.frame(pr1$x[,pcs_to_plot])
+dat$animal=rownames(dat)
+p <- ggplot(dat, aes(PC1, PC2, label = animal)) +   
+  geom_point(color = plotcolors)
+p2 <- p + geom_text_repel(max.overlaps = 80) + theme_bw() + ggtitle("Original classes")
+p2
+
+
+kmeans_colors=colvec[kmeans_7[rownames(dat),1]]
+  
+p <- ggplot(dat, aes(PC1, PC2, label = animal)) +   ##this line also needs to be modified
+  geom_point(color = kmeans_colors)
+p2 <- p + geom_text_repel(max.overlaps = 80) + theme_bw() + ggtitle("k-means clusters")
+p2
+
+
+
+```
+

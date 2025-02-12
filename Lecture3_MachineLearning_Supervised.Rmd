@@ -1,0 +1,246 @@
+title: "Lecture 3 - Supervised_Learning"
+output: html_document
+date: "2023-09-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Install packages as needed
+```{r}
+packages_to_install=c("ggplot2","ggrepel","e1071","randomForest","nnet","dendextend")
+install.packages(setdiff(packages_to_install, rownames(installed.packages())))
+rm(packages_to_install)
+```
+
+##Load packages
+```{r}
+require(ggplot2)
+require(ggrepel)
+require(e1071)
+require(randomForest)
+require(nnet)
+```
+
+##Load animal attribute data set
+```{r}
+animaldata=read.csv("Lecture3_animaltable.csv",as.is=T,header=T,row.names=1)
+```
+
+##Explore the data set using "head" or "summary" or in the workspace
+```{r}
+##Write your code here
+head(animaldata)
+table(animaldata$type)
+```
+
+#Part 1: Supervised analysis
+
+##Step 1: select training and test set
+```{r}
+trainset=animaldata[1:66,-17]
+traincategories=animaldata[1:66,17]
+
+testset=animaldata[-(1:66),-17]
+testcategories=animaldata[-(1:66),17]
+```
+
+```{r}
+####if you want to select randomly, use "sample" command
+?sample
+set.seed(0)
+trainset_indices = sample(1:100,66,replace=FALSE)
+trainset=animaldata[trainset_indices,-17]
+traincategories=animaldata[trainset_indices,17]
+
+
+```
+
+##Step 2: Test out different machine learning classification algorithms
+
+###Step 2a: k-Nearest Neighbors
+```{r}
+##Parameter: k (how many nearest neighbors are used for classification)
+k_param=3
+
+###train model
+set.seed(0)
+gknn_model=gknn(x=trainset,y=as.factor(traincategories),k = k_param)
+
+###predict categories of test set
+gknn_output=predict(gknn_model,testset)
+
+```
+
+###Evaluate how the model did: confusion table to look at predicted versus actual categories
+```{r}
+gknn_table=table(testcategories,gknn_output)
+gknn_table
+```
+
+###Which animals are mis-classified? 
+```{r}
+misclassified=which(gknn_output != testcategories)
+misclassified_info = data.frame(animalname = rownames(testset)[misclassified],
+                                realcategory = testcategories[misclassified],
+                                predicted = gknn_output[misclassified])
+misclassified_info
+```
+
+###Get a summary metric of classification error: total % misclassified
+```{r}
+gknn_table=table(gknn_output,testcategories)
+error_num=sum(gknn_table)-sum(diag(gknn_table))
+error_pct=100*error_num/sum(gknn_table)
+error_pct
+```
+
+###Exploration: do different values of k make the classification accuracy better or worse?
+```{r}
+##Parameter: k (how many nearest neighbors are used for classification)
+k_param=1  ##change this value
+
+###train model
+set.seed(0)
+gknn_model=gknn(x=trainset,y=as.factor(traincategories),k = k_param)
+
+###predict categories of test set
+gknn_output=predict(gknn_model,testset)
+
+gknn_table=table(gknn_output,testcategories)
+error_num=sum(gknn_table)-sum(diag(gknn_table))
+error_pct=100*error_num/sum(gknn_table)
+error_pct
+```
+###For the best k, which animals are still misclassified?
+```{r}
+##Parameter: k (how many nearest neighbors are used for classification)
+k_param=1  ##change this value
+
+###train model
+set.seed(0)
+gknn_model=gknn(x=trainset,y=as.factor(traincategories),k = k_param)
+
+###predict categories of test set
+gknn_output=predict(gknn_model,testset)
+misclassified=which(gknn_output != testcategories)
+misclassified_info = data.frame(animalname = rownames(testset)[misclassified],
+                                realcategory = testcategories[misclassified],
+                                predicted = gknn_output[misclassified])
+misclassified_info
+
+```
+
+
+###Step 2b: Random Forest
+```{r}
+##Parameter: numtrees (how many trees to use)
+numtrees=200
+
+###train model
+set.seed(1)
+rf_model=randomForest(x=trainset,y=as.factor(traincategories),ntree = numtrees)
+
+###predict categories of test set
+rf_output=predict(rf_model,testset)
+
+```
+
+###Evaluate how the model did: look at predicted versus actual categories
+```{r}
+rf_table=table(rf_output,testcategories)
+rf_table
+error_num=sum(rf_table)-sum(diag(rf_table))
+error_pct=100*error_num/sum(rf_table)
+error_pct
+```
+
+###Exercise: Which animals are mis-predicted?
+```{r}
+misclassified=which(rf_output != testcategories)
+misclassified_info = data.frame(animalname = rownames(testset)[misclassified],
+                                realcategory = testcategories[misclassified],
+                                predicted = rf_output[misclassified])
+misclassified_info
+```
+
+###Exercise: how does the prediction change with different values for numtrees?
+```{r}
+##Parameter: numtrees (how many trees to use)
+numtrees=100 ##change this value
+
+###train model
+set.seed(1)
+rf_model=randomForest(x=trainset,y=as.factor(traincategories),ntree = numtrees)
+
+###predict categories of test set
+rf_output=predict(rf_model,testset)
+rf_table=table(rf_output,testcategories)
+error_num=sum(rf_table)-sum(diag(rf_table))
+error_pct=100*error_num/sum(rf_table)
+error_pct
+```
+
+###Step 2c: Neural network
+```{r}
+##Parameters: # of intermediate nodes, weight decay (penalty for overfitting), maximum iterations
+nsize = 10
+decay = 0   
+iterations = 100
+
+##Convert classes to binary output format
+classbinaryoutput=class.ind(traincategories)
+
+###train model
+set.seed(1)
+nn_model=nnet(x=trainset,y=classbinaryoutput,size=nsize,decay=decay,maxit=iterations)
+nn_output=predict(nn_model,testset)
+
+nn_classprediction=colnames(nn_output)[max.col(nn_output)]
+nn_table=table(nn_classprediction,testcategories)
+nn_table
+error_num=sum(nn_table)-sum(diag(nn_table))
+error_pct=100*error_num/sum(nn_table)
+error_pct
+
+```
+
+###Exercise: how can we modify parameters to fix the poor performance?
+```{r}
+##Modify the parameters to see how the accuracy changes
+##Parameters: # of intermediate nodes, weight decay (penalty for overfitting), maximum iterations
+nsize = 10  
+decay = 0.01   
+iterations = 100
+
+##Convert classes to binary output format
+classbinaryoutput=class.ind(traincategories)
+
+###train model
+set.seed(1)
+nn_model=nnet(x=trainset,y=classbinaryoutput,size=nsize,decay=decay,maxit=iterations)
+nn_output=predict(nn_model,testset)
+
+nn_classprediction=colnames(nn_output)[max.col(nn_output)]
+nn_table=table(nn_classprediction,testcategories)
+nn_table
+error_num=sum(nn_table)-sum(diag(nn_table))
+error_pct=100*error_num/sum(nn_table)
+error_pct
+```
+
+
+###Exercise: which animals are mis-predicted with the new parameter regime?
+```{r}
+
+```
+
+###Exercise: select a neww parameter regime and evaluate performance
+```{r}
+
+```
+
+
+
+
