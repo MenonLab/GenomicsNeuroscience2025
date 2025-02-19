@@ -1,0 +1,479 @@
+---
+title: "Lecture 3 - Unsupervised_Learning"
+date: "2025-02-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Part 2 - Unsupervised analysis
+
+## Install packages
+```{r}
+install.packages(c("ggplot2", "ggrepel", "dendextend", "randomForest", "dplyr"))
+```
+
+##Load packages
+```{r}
+require(ggplot2)
+require(ggrepel)
+require(dendextend)
+require(randomForest)
+require(dplyr)
+```
+
+##Load city temp data
+```{r}
+citydata=read.csv("/Users/fahadparyani/Documents/Columbia/class/GenomicsNeuroscience2025/city_monthly_temps.csv",as.is=T,header=T)
+```
+
+##Explore the data set using "head" or "summary" or in the workspace
+```{r}
+##Write your code here
+head(citydata)
+table(citydata$Continent)
+```
+
+##Step 1: separate categories from data matrix, assign colors to each category
+```{r}
+#get pcs for variation of monthly rainfall
+columns_to_remove = c("Country","City","Continent", "Annual", "Annual.1")
+citymat =citydata[,!colnames(citydata) %in% columns_to_remove]
+rownames(citymat) = citydata$City
+
+#plot each continent a separate color
+continents =citydata$Continent
+colvec=c("red","orange","darkgreen","blue","steelblue","purple")
+plotcolors=colvec[as.numeric(as.factor(continents))]
+
+#also create plotcolors based on global south 
+global_south_continents = c("Africa","Oceania","SouthAmeric")
+plotcolors_south =colvec[as.numeric(as.factor(continents %in% global_south_continents))]
+```
+
+##Step 2: Dimensionality reduction using PCA
+```{r}
+pr1=prcomp(citymat)
+```
+
+##Explore the PCA output using head/summary/environment window
+```{r}
+##Write your code here
+summary(pr1)
+```
+
+##Step 3: Examine the proportion of variance
+```{r}
+pcsummary=summary(pr1)
+barplot(pcsummary$importance[2,])
+```
+
+##Step 4: Examine feature loadings for PC1
+```{r}
+barplot(pr1$rotation[,1],las=2,ylab="PC1 loading")
+```
+
+##Exercise: Examine feature loadings for PC2, PC3, and PC4
+```{r}
+barplot(pr1$rotation[,2],las=2,ylab="PC2 loading")
+```
+
+```{r}
+barplot(pr1$rotation[,3],las=2,ylab="PC3 loading")
+```
+
+```{r}
+barplot(pr1$rotation[,4],las=2,ylab="PC4 loading")
+```
+
+##Step 4: Plot the citys in PC space
+```{r}
+###This is complicated plotting code using ggplot - it allows for much more flexibility, but takes some practice to get used to
+pcs_to_plot=c(1,2)
+
+dat = data.frame(pr1$x[,pcs_to_plot])
+dat$city=rownames(dat)
+
+#plot based on global south position
+p1 <- ggplot(dat, aes(PC1, PC2, label = city)) +
+  geom_point(color = plotcolors_south) + geom_text_repel(size = 2)
+p1
+```
+Q: Can you predict which continent a city belongs to based on its PC1 and PC2 coordinates?
+
+Plot PC1, PC2 colored by continent 
+```{r}
+p2 <- ggplot(dat, aes(PC1, PC2, label = city)) +
+  geom_point(color = plotcolors) + geom_text_repel(size = 2)
+p2
+```
+
+PC2 vs PC3 - Do you notice any trends (especially in the context of loadings)?
+```{r}
+pcs_to_plot=c(2,3)
+
+dat = data.frame(pr1$x[,pcs_to_plot])
+dat$city=rownames(dat)
+
+#plot based on global south position
+p1 <- ggplot(dat, aes(PC2, PC3, label = city)) +
+  geom_point(color = plotcolors_south) + geom_text_repel(size = 2)
+p1
+```
+
+PC3 vs PC4 - Do you notice any trends (especially in the context of loadings)?
+```{r}
+pcs_to_plot=c(3,4)
+
+dat = data.frame(pr1$x[,pcs_to_plot])
+dat$city=rownames(dat)
+
+#plot based on global south position
+p1 <- ggplot(dat, aes(PC3, PC4, label = city)) +
+  geom_point(color = plotcolors_south) + geom_text_repel(size = 2)
+p1
+```
+
+##Step 5: Testing out clustering of citys using hierarchical clustering
+```{r}
+##Hierarchical clustering without dimensionality reduction
+###Specify a distance metric and a grouping method - here, use Euclidean distance and complete linkage
+#By default, the hcluster function clusters the rows of a data.frame
+distance_values = dist(citymat,method = "euclidean")
+clustering = hclust(distance_values,method = "complete")
+dendrogram1 = as.dendrogram(clustering)
+labels_colors(dendrogram1) = plotcolors[order.dendrogram(dendrogram1)]
+par(cex=.6,cex.axis=2);plot(dendrogram1); par()
+```
+
+##Cutting the tree to generate a specific number of clusters
+```{r}
+###Cut the tree to get 7 clusters
+clusters <- cutree(clustering,k = 7)
+hclust_correlation_complete_7=data.frame(cluster=clusters[clustering$order])
+hclust_correlation_complete_7
+colvec=c("red","orange","darkgreen","blue","steelblue","purple","brown")
+labels_colors(dendrogram1) = colvec[as.factor(hclust_correlation_complete_7$cluster)]
+par(cex=.6,cex.axis=2);plot(dendrogram1); par()
+```
+
+## Let's use random forest to try to predict a city's continent
+### Sampling accross continents
+```{r}
+set.seed(0)
+rownames(citydata) <- citydata$City
+trainset_indices = sample(nrow(citydata),floor(nrow(citydata) * .6),replace=FALSE)
+trainset=citydata[trainset_indices,-c(1:3, 17)]
+traincategories=citydata[trainset_indices,3]
+testset=citydata[-trainset_indices,-c(1:3, 17)]
+testcategories=citydata[-trainset_indices,3]
+```
+
+### Stratified sampling by continent: Ensure Continents with fewer cities are represented
+```{r}
+set.seed(0)
+rownames(citydata) <- citydata$City
+
+# Stratified sampling per continent
+trainset = traincategories = testset = testcategories = list()
+for (continent in unique(citydata$Continent)) {
+  # Subset data per continent and define percent of obseravtions for training and testing
+  continentdata <- citydata[citydata$Continent == continent,]
+  num_to_sample=floor(nrow(continentdata) * .6)
+  sampled_cities=sample(nrow(continentdata), num_to_sample, replace=FALSE)
+  
+  # Define train and test datasets
+  trainset_continent=continentdata[sampled_cities, 4:16]
+  traincategories_continent=continentdata[sampled_cities, 3]
+  testset_continent=continentdata[-sampled_cities, 4:16]
+  testcategories_continent=continentdata[-sampled_cities, 3]
+  
+  # Store them in lists
+  trainset[[continent]]=trainset_continent
+  traincategories[[continent]]=traincategories_continent
+  testset[[continent]]=testset_continent
+  testcategories[[continent]]=testcategories_continent
+}
+
+# Concatenate trainning and testing datasets across continents
+trainset=dplyr::bind_rows(trainset)
+traincategories=unlist(traincategories, use.names = FALSE)
+testset=dplyr::bind_rows(testset)
+testcategories=unlist(testcategories, use.names = FALSE)
+```
+
+# Run random forest
+```{r}
+##Parameter: numtrees (how many trees to use)
+numtrees=1000
+rf_model=randomForest(x=trainset,y=as.factor(traincategories),ntree = numtrees,
+                      importance = TRUE)
+
+###predict categories of test set
+rf_output=predict(rf_model,testset)
+```
+
+###Evaluate how the model did: look at predicted versus actual categories
+```{r}
+rf_table=table(rf_output,testcategories)
+rf_table
+error_num=sum(rf_table)-sum(diag(rf_table))
+error_pct=100*error_num/sum(rf_table)
+error_pct
+```
+
+###Exercise: Which cities are mis-predicted?
+```{r}
+misclassified=which(rf_output != testcategories)
+misclassified_info = data.frame(cityname = rownames(testset)[misclassified],
+                                realcategory = testcategories[misclassified],
+                                predicted = rf_output[misclassified])
+misclassified_info
+```
+
+###Exercise: Which months are more important?
+```{r}
+#higher value mean more important
+round(importance(rf_model), 2)
+sort(rowMeans(round(importance(rf_model), 2)), decreasing = TRUE)
+```
+
+###Exercise: Can we improve the model by bringin extra information?
+```{r}
+# Let's add language information
+main_language <- c(
+  Algiers = "Arabic", Luanda = "Portuguese", Gaborone = "English",  
+  Yaounde = "French", Kinshasa = "French", Cairo = "Arabic",  
+  Alexandria = "Arabic", Asmara = "Tigrinya", "Addis Ababa" = "Amharic",  
+  Accra = "English", Abidjan = "French", Nairobi = "English",  
+  Tripoli = "Arabic", Antananarivo = "Malagasy", Bamako = "French",  
+  Rabat = "Arabic", Lagos = "English", Dakar = "French", Mogadishu = "Somali",  
+  "Cape Town" = "English", Johannesburg = "English", Durban = "English",  
+  Khartoum = "Arabic", "Dar es Salaam" = "Swahili", Tunis = "Arabic",  
+  Kampala = "English", Lusaka = "English", Harare = "English", Kabul = "Pashto",  
+  Dhaka = "Bengali", "Phnom Penh" = "Khmer", Beijing = "Mandarin",  
+  Guangzhou = "Mandarin", Harbin = "Mandarin", Lhasa = "Tibetan",  
+  Shanghai = "Mandarin", "Hong Kong" = "Cantonese", "New Delhi" = "Hindi",  
+  Kolkata = "Bengali", Mumbai = "Marathi", Jakarta = "Indonesian",  
+  Baghdad = "Arabic", Tehran = "Persian", "Tel Aviv" = "Hebrew",  
+  Tokyo = "Japanese", Pyongyang = "Korean", Seoul = "Korean",  
+  "Kuwait City" = "Arabic", Beirut = "Arabic", "Kuala Lumpur" = "Malay",  
+  Ulaanbaatar = "Mongolian", Kathmandu = "Nepali", Karachi = "Urdu",  
+  Manila = "Filipino", Riyadh = "Arabic", Singapore = "English",  
+  Damascus = "Arabic", Taipei = "Mandarin", Bangkok = "Thai",  
+  Ankara = "Turkish", Dubai = "Arabic", Hanoi = "Vietnamese",  
+  Vienna = "German", Brussels = "Dutch", Zagreb = "Croatian",  
+  Prague = "Czech", Copenhagen = "Danish", Helsinki = "Finnish",  
+  Paris = "French", Berlin = "German", Athens = "Greek", Dublin = "English",  
+  Rome = "Italian", Amsterdam = "Dutch", Oslo = "Norwegian", Warsaw = "Polish",  
+  Lisbon = "Portuguese", Moscow = "Russian", Belgrade = "Serbian",  
+  Madrid = "Spanish", Seville = "Spanish", Stockholm = "Swedish",  
+  Zurich = "German", Istanbul = "Turkish", Kyiv = "Ukrainian",  
+  Edinburgh = "English", London = "English", Nassau = "English",  
+  Calgary = "English", Edmonton = "English", Montreal = "French",  
+  Toronto = "English", Vancouver = "English", Winnipeg = "English",  
+  "San Jose" = "Spanish", Havana = "Spanish", "Santo Domingo" = "Spanish",  
+  "Guatemala City" = "Spanish", Kingston = "English", "Mexico City" = "Spanish",  
+  Tijuana = "Spanish", "Panama City" = "Spanish", "San Salvador" = "Spanish",  
+  "San Juan" = "Spanish", Anchorage = "English", Atlanta = "English",  
+  Baltimore = "English", Boston = "English", Chicago = "English",  
+  Dallas = "English", Denver = "English", Detroit = "English",  
+  Houston = "English", "Las Vegas" = "English", "Los Angeles" = "English",  
+  Miami = "English", Minneapolis = "English", "New York City" = "English",  
+  Phoenix = "English", "San Diego" = "English", "San Francisco" = "English",  
+  Seattle = "English", Washington = "English", Darwin = "English",  
+  Melbourne = "English", Perth = "English", Sydney = "English",  
+  Auckland = "English", Christchurch = "English", "Port Moresby" = "English",  
+  Honolulu = "English", "Buenos Aires" = "Spanish", "La Paz" = "Spanish",  
+  Brasilia = "Portuguese", "Rio de Janeiro" = "Portuguese",  
+  "Sao Paulo" = "Portuguese", Santiago = "Spanish", Bogota = "Spanish",  
+  Quito = "Spanish", Georgetown = "English", Lima = "Spanish",  
+  Caracas = "Spanish"
+)
+
+num_languages <- c(
+  Algiers = 2, Luanda = 1, Gaborone = 2, Yaounde = 2, Kinshasa = 4, Cairo = 1,  
+  Alexandria = 1, Asmara = 3, "Addis Ababa" = 5, Accra = 1, Abidjan = 1,  
+  Nairobi = 2, Tripoli = 1, Antananarivo = 2, Bamako = 13, Rabat = 2, Lagos = 1,  
+  Dakar = 2, Mogadishu = 2, "Cape Town" = 11, Johannesburg = 11, Durban = 11,  
+  Khartoum = 2, "Dar es Salaam" = 2, Tunis = 1, Kampala = 2, Lusaka = 1,  
+  Harare = 1, Kabul = 2, Dhaka = 1, "Phnom Penh" = 1, Beijing = 1, Guangzhou = 1,  
+  Harbin = 1, Lhasa = 2, Shanghai = 1, "Hong Kong" = 2, "New Delhi" = 22,  
+  Kolkata = 22, Mumbai = 22, Jakarta = 1, Baghdad = 1, Tehran = 1,  
+  "Tel Aviv" = 1, Tokyo = 1, Pyongyang = 1, Seoul = 1, "Kuwait City" = 1,  
+  Beirut = 1, "Kuala Lumpur" = 1, Ulaanbaatar = 1, Kathmandu = 1, Karachi = 2,  
+  Manila = 2, Riyadh = 1, Singapore = 4, Damascus = 1, Taipei = 1, Bangkok = 1,  
+  Ankara = 1, Dubai = 1, Hanoi = 1, Vienna = 1, Brussels = 3, Zagreb = 1,  
+  Prague = 1, Copenhagen = 1, Helsinki = 2, Paris = 1, Berlin = 1, Athens = 1,  
+  Dublin = 2, Rome = 1, Amsterdam = 1, Oslo = 1, Warsaw = 1, Lisbon = 1,  
+  Moscow = 1, Belgrade = 1, Madrid = 1, Seville = 1, Stockholm = 1, Zurich = 4,  
+  Istanbul = 1, Kyiv = 1, Edinburgh = 2, London = 2, Nassau = 1, Calgary = 2,  
+  Edmonton = 2, Montreal = 2, Toronto = 2, Vancouver = 2, Winnipeg = 2,  
+  "San Jose" = 1, Havana = 1, "Santo Domingo" = 1, "Guatemala City" = 1,  
+  Kingston = 1, "Mexico City" = 1, Tijuana = 1, "Panama City" = 1,  
+  "San Salvador" = 1, "San Juan" = 1, Anchorage = 1, Atlanta = 1,  
+  Baltimore = 1, Boston = 1, Chicago = 1, Dallas = 1, Denver = 1, Detroit = 1,  
+  Houston = 1, "Las Vegas" = 1, "Los Angeles" = 1, Miami = 1, Minneapolis = 1,  
+  "New York City" = 1, Phoenix = 1, "San Diego" = 1, "San Francisco" = 1,  
+  Seattle = 1, Washington = 1, Darwin = 1, Melbourne = 1, Perth = 1,  
+  Sydney = 1, Auckland = 1, Christchurch = 1, "Port Moresby" = 3,  
+  Honolulu = 1, "Buenos Aires" = 1, "La Paz" = 1, Brasilia = 1,  
+  "Rio de Janeiro" = 1, "Sao Paulo" = 1, Santiago = 1, Bogota = 1,  
+  Quito = 1, Georgetown = 1, Lima = 1, Caracas = 1
+)
+
+city_longitudes <- c(
+  Algiers = 3.0588, Luanda = 13.2343, Gaborone = 25.9201, Yaounde = 11.5021,  
+  Kinshasa = 15.2663, Cairo = 31.2357, Alexandria = 29.9553, Asmara = 38.9376,  
+  "Addis Ababa" = 38.7469, Accra = -0.186964, Abidjan = -4.0083,  
+  Nairobi = 36.8219, Tripoli = 13.1913, Antananarivo = 47.5079, Bamako = -8.0029,  
+  Rabat = -6.8326, Lagos = 3.3792, Dakar = -17.4677, Mogadishu = 45.3182,  
+  "Cape Town" = 18.4241, Johannesburg = 28.0473, Durban = 31.0218,  
+  Khartoum = 32.5599, "Dar es Salaam" = 39.2083, Tunis = 10.1815,  
+  Kampala = 32.5825, Lusaka = 28.3228, Harare = 31.0496, Kabul = 69.1607,  
+  Dhaka = 90.4125, "Phnom Penh" = 104.8922, Beijing = 116.4074,  
+  Guangzhou = 113.2644, Harbin = 126.5350, Lhasa = 91.1409,  
+  Shanghai = 121.4737, "Hong Kong" = 114.1694, "New Delhi" = 77.2090,  
+  Kolkata = 88.3639, Mumbai = 72.8777, Jakarta = 106.8456, Baghdad = 44.3661,  
+  Tehran = 51.3890, "Tel Aviv" = 34.7818, Tokyo = 139.6917, Pyongyang = 125.7625,  
+  Seoul = 126.9780, "Kuwait City" = 47.9783, Beirut = 35.5018,  
+  "Kuala Lumpur" = 101.6869, Ulaanbaatar = 106.9176, Kathmandu = 85.3240,  
+  Karachi = 67.0011, Manila = 120.9842, Riyadh = 46.6753, Singapore = 103.8198,  
+  Damascus = 36.2919, Taipei = 121.5654, Bangkok = 100.5018, Ankara = 32.8597,  
+  Dubai = 55.2708, Hanoi = 105.8544, Vienna = 16.3738, Brussels = 4.3517,  
+  Zagreb = 15.9819, Prague = 14.4378, Copenhagen = 12.5683,  
+  Helsinki = 24.9354, Paris = 2.3522, Berlin = 13.4050, Athens = 23.7275,  
+  Dublin = -6.2603, Rome = 12.4964, Amsterdam = 4.9041, Oslo = 10.7522,  
+  Warsaw = 21.0122, Lisbon = -9.1399, Moscow = 37.6173, Belgrade = 20.4489,  
+  Madrid = -3.7038, Seville = -5.9845, Stockholm = 18.0686, Zurich = 8.5417,  
+  Istanbul = 28.9784, Kyiv = 30.5234, Edinburgh = -3.1883, London = -0.1276,  
+  Nassau = -77.3554, Calgary = -114.0719, Edmonton = -113.4909,  
+  Montreal = -73.5673, Toronto = -79.3832, Vancouver = -123.1216,  
+  Winnipeg = -97.1384, "San Jose" = -84.0907, "Havana" = -82.3666,  
+  "Santo Domingo" = -69.9312, "Guatemala City" = -90.5069,  
+  Kingston = -76.8018, "Mexico City" = -99.1332, Tijuana = -117.1611,  
+  "Panama City" = -79.5199, "San Salvador" = -89.2182, "San Juan" = -66.1057,  
+  Anchorage = -149.9003, Atlanta = -84.3880, Baltimore = -76.6122,  
+  Boston = -71.0589, Chicago = -87.6298, Dallas = -96.7970, Denver = -104.9903,  
+  Detroit = -83.0458, Houston = -95.3698, "Las Vegas" = -115.1398,  
+  "Los Angeles" = -118.2437, Miami = -80.1918, Minneapolis = -93.2650,  
+  "New York City" = -74.0060, Phoenix = -112.0740, "San Diego" = -117.1611,  
+  "San Francisco" = -122.4194, Seattle = -122.3321, Washington = -77.0369,  
+  Darwin = 130.8456, Melbourne = 144.9631, Perth = 115.8575, Sydney = 151.2093,  
+  Auckland = 174.7633, Christchurch = 172.6362, "Port Moresby" = 147.1797,  
+  Honolulu = -157.8583, "Buenos Aires" = -58.3816, "La Paz" = -68.1193,  
+  Brasilia = -47.9292, "Rio de Janeiro" = -43.1729, "Sao Paulo" = -46.6333,  
+  Santiago = -70.6483, Bogota = -74.0721, Quito = -78.4678, Georgetown = -58.1551,  
+  Lima = -77.0428, Caracas = -66.9036
+)
+
+```
+
+### Add main language
+```{r}
+trainset$language <- main_language[rownames(trainset)]
+testset$language <- main_language[rownames(testset)]
+
+##Parameter: numtrees (how many trees to use)
+numtrees=1000
+rf_model2=randomForest(x=trainset,y=as.factor(traincategories),ntree = numtrees,
+                      importance = TRUE)
+
+###predict categories of test set
+rf_output2=predict(rf_model2,testset)
+
+rf_table2=table(rf_output2,testcategories)
+rf_table2
+error_num=sum(rf_table2)-sum(diag(rf_table2))
+error_pct2=100*error_num/sum(rf_table2)
+error_pct2
+
+# Which cities are mis-predicted?
+misclassified=which(rf_output2 != testcategories)
+misclassified_info2 = data.frame(cityname = rownames(testset)[misclassified],
+                                realcategory = testcategories[misclassified],
+                                predicted = rf_output2[misclassified])
+misclassified_info2
+
+# Which months are more important?
+round(importance(rf_model2), 2)
+sort(rowMeans(round(importance(rf_model2), 2)), decreasing = TRUE)
+```
+
+### Add number of languages
+```{r}
+trainset$num_language <- num_languages[rownames(trainset)]
+testset$num_language <- num_languages[rownames(testset)]
+
+##Parameter: numtrees (how many trees to use)
+numtrees=1000
+rf_model3=randomForest(x=trainset,y=as.factor(traincategories),ntree = numtrees,
+                      importance = TRUE)
+
+###predict categories of test set
+rf_output3=predict(rf_model3,testset)
+
+rf_table3=table(rf_output3,testcategories)
+rf_table3
+error_num=sum(rf_table3)-sum(diag(rf_table3))
+error_pct3=100*error_num/sum(rf_table3)
+error_pct3
+
+# Which cities are mis-predicted?
+misclassified=which(rf_output3 != testcategories)
+misclassified_info3 = data.frame(cityname = rownames(testset)[misclassified],
+                                realcategory = testcategories[misclassified],
+                                predicted = rf_output3[misclassified])
+misclassified_info3
+
+# Which months are more important?
+round(importance(rf_model3), 2)
+sort(rowMeans(round(importance(rf_model3), 2)), decreasing = TRUE)
+```
+### Add longitude language
+```{r}
+trainset$longitude <- city_longitudes[rownames(trainset)]
+testset$longitude <- city_longitudes[rownames(testset)]
+
+##Parameter: numtrees (how many trees to use)
+numtrees=1000
+rf_model4=randomForest(x=trainset,y=as.factor(traincategories),ntree = numtrees,
+                      importance = TRUE)
+
+###predict categories of test set
+rf_output4=predict(rf_model4,testset)
+
+rf_table4=table(rf_output4,testcategories)
+rf_table4
+error_num=sum(rf_table4)-sum(diag(rf_table4))
+error_pct4=100*error_num/sum(rf_table4)
+error_pct4
+
+# Which cities are mis-predicted?
+misclassified=which(rf_output4 != testcategories)
+misclassified_info4 = data.frame(cityname = rownames(testset)[misclassified],
+                                realcategory = testcategories[misclassified],
+                                predicted = rf_output4[misclassified])
+misclassified_info4
+
+# Which months are more important?
+round(importance(rf_model4), 2)
+sort(rowMeans(round(importance(rf_model4), 2)), decreasing = TRUE)
+```
+
+#### Compare errors and missclasified labels
+```{r}
+#Errors
+error_pct
+error_pct2
+error_pct3
+error_pct4
+
+#Misclassified
+misclassified_info
+misclassified_info2
+misclassified_info3
+misclassified_info4
+```
