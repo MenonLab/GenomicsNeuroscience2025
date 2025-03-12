@@ -1,0 +1,307 @@
+title: "Lecture 5 - Bulk RNAseq analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Install packages as needed - only run this command once
+```{r}
+packages_to_install = c(
+  "limma", "edgeR", "EDASeq", "RUVSeq", "ffpe", "RColorBrewer", 
+  "DESeq2", "org.Mm.eg.db", "NOISeq", "dplyr", "statmod"
+)
+
+# Identify missing packages
+missing_packages = packages_to_install[!(packages_to_install %in% installed.packages()[,"Package"])]
+
+# Install missing packages
+if (length(missing_packages) > 0) {
+  install.packages(missing_packages, dependencies = TRUE)
+}
+
+# Bioconductor packages
+bioc_packages = c("EDASeq", "RUVSeq", "ffpe", "DESeq2", "org.Mm.eg.db", "NOISeq")
+missing_bioc = bioc_packages[!(bioc_packages %in% installed.packages()[,"Package"])]
+
+if (length(missing_bioc) > 0) {
+  if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+  BiocManager::install(missing_bioc)
+}
+rm(packages_to_install, missing_packages, bioc_packages, missing_bioc)
+```
+
+##Load packages - run this command each time this script is loaded
+```{r}
+require(limma)
+require(edgeR)
+require(EDASeq)
+require(RUVSeq)
+require(ffpe)
+require(RColorBrewer)
+require(DESeq2)
+require(org.Mm.eg.db)
+require(NOISeq)
+require(readxl)
+require(dplyr)
+require(statmod)
+```
+
+##Load sleep deprivation data set 1 (Hor et al. 2019, mouse cortex)
+```{r}
+# https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE113754
+load("GSE113754_SD1.rda")
+SD1 = as.matrix(SD1)
+dim(SD1)
+head(SD1)
+```
+
+##Create a design matrix for the conditions
+```{r}
+#Create a factor of the conditions for the data matrix
+x = as.factor(rep(c("HC","SD5"),times=c(5,5)))
+names(x) = colnames(SD1)
+
+###View the factor
+x
+```
+###Set color palette for figures
+```{r}
+colors = brewer.pal(9, "Set1")
+colLib = colors[x]
+```
+
+###Remove genes with very low counts
+```{r}
+countlimit=10
+numsamps=3
+
+#Filter the data to only include genes with at least "countlimit" counts in at least "numsamps" samles
+filter = rowSums(SD1 > countlimit)
+filtered = SD1[which(filter>=numsamps), ]
+
+#See how many genes were in the original and the filtered matrix
+nrow(SD1)
+nrow(filtered)
+```
+###Exploratory analysis - PCA
+```{r}
+###Normalize samples using upper quantile normalization
+uq = betweenLaneNormalization(filtered, which = "upper")
+
+###Visualize gene distribution per sample after normalization
+plotRLE(uq, col= colLib, outline = FALSE, las = 3, ylim = c(-0.5, 0.5), ylab = "Relative Log Expression", cex.axis = 1, cex.lab = 1)
+
+###Plot samples using PCA
+plotPCA(uq, col = colLib, cex = 1, cex.axis = 1, cex.lab = 1, xlim = c(-0.75, 0.75), ylim = c(-0.75, 0.75))
+```
+###Run standard workflow for bulk DEG analysis
+```{r}
+###Create design object from design matrix 
+design = model.matrix(~x - 1)
+
+###Inspect this matrix
+design
+
+###Run standard edgeR workflow 
+y = DGEList(counts = filtered, group = x)        ###Create count matrix
+y
+y = calcNormFactors(y, method = "upperquartile") ###Normalize counts
+y
+y = estimateDisp(y, design, verbose = TRUE)      ###Estimate dispersion for each gene
+y
+plot(y$AveLogCPM, y$trended.dispersion)
+plot(y$AveLogCPM, y$tagwise.dispersion)
+plotBCV(y)
+fit = glmQLFit(y, design, robust = TRUE)         ###Calculate F statistics for each gene
+plotQLDisp(fit)
+qlf1 = glmQLFTest(fit, contrast = c(1, -1))      ###Generate p-values for specific contrast
+topUQSD1 = topTags(qlf1, n = Inf)$table          ###Create results table
+
+###Convert ENSEMBL IDs to gene name
+genenames=mapIds(org.Mm.eg.db, keys = rownames(topUQSD1), column = 'SYMBOL', keytype = 'ENSEMBL')
+topUQSD1$genenames=genenames
+topUQSD1$ENSEMBL=rownames(topUQSD1)
+
+head(topUQSD1)
+
+```
+###Examine DEG results
+```{r}
+
+###Histogram of uncorrected p-values
+hist(topUQSD1$PValue, main = "", xlab = "p-value", breaks = 100, ylim = c(0, 1400))
+
+
+###Check how many significant genes
+sum(topUQSD1$FDR < 0.05)
+
+###Create Volcano Plot of all genes, and color DE genes
+plot(topUQSD1[, 1], -log10(topUQSD1$FDR), pch = 20, col = "gray", cex= 0.5, ylab = "-log10(FDR adjusted p-value)", xlab= "log2(SD5/HC)", ylim = c(0, 15), xlim = c(-3, 3), cex.lab = 1, cex.axis = 1)
+de = rownames(topUQSD1[topUQSD1$FDR <= 0.05, ]) 
+points(topUQSD1[de, 1], -log10(topUQSD1[de, "FDR"]), pch = 20, col = colors[2], cex = 1, lwd = 2)
+
+```
+###Print up- and down-regulated genes
+```{r}
+###Sanity check: which condition does positive log fold-change mean?
+up1=topUQSD1[which(topUQSD1$logFC>0 & topUQSD1$FDR<0.05),]
+head(up1)
+down1=topUQSD1[which(topUQSD1$logFC<0 & topUQSD1$FDR<0.05),]
+head(down1)
+
+boxplot(10^6*y$counts[up1$ENSEMBL[1],]/colSums(y$counts) ~ y$samples$group,ylab="CPM")
+boxplot(10^6*y$counts[down1$ENSEMBL[1],]/colSums(y$counts) ~ y$samples$group,ylab="CPM")
+
+write.table(up1$ENSEMBL,file="Upregulated_in_HC.txt",quote=F,row.names=F)
+write.table(down1$ENSEMBL,file="Upregulated_in_SD5.txt",quote=F,row.names=F)
+```
+
+
+
+#End of workshop part 1#
+
+
+#Workshop part 2 - Adjusting for hidden confounders
+
+
+##Load sleep deprivation data sets 1 and 2 (Hor et al. 2019, mouse cortex, Ingiosi et al. 2019)
+```{r}
+load("GSE113754_SD1.rda")
+
+load("GSE140345_SD2.rda")
+
+#Combine data sets
+SD1 = as.matrix(SD1)
+SD2 = as.matrix(SD2)
+SD = cbind(SD1, SD2)
+dim(SD)
+head(SD)
+```
+
+##Create a design matrix for the conditions
+```{r}
+#Create a factor of the conditions for the data matrix
+x = as.factor(rep(c("HC", "SD5", "HC", "SD6"), c(5,5,5,3)))
+names(x) = colnames(SD)
+
+colors = brewer.pal(9, "Set1")
+colLib = colors[x]
+
+
+###View the design matrix and the factor
+x
+```
+###Remove genes with very low counts
+```{r}
+countlimit=10
+numsamps=3
+
+#Filter the data to only include genes with at least "countlimit" counts in at least "numsamps" samles
+filter = rowSums(SD > countlimit)
+filtered = SD[which(filter>=numsamps), ]
+
+#See how many genes were in the original and the filtered matrix
+nrow(SD)
+nrow(filtered)
+```
+
+###Exploratory analysis - PCA
+```{r}
+###Normalize samples using upper quantile normalization
+uq = betweenLaneNormalization(filtered, which = "upper")
+
+###Visualize gene distribution per sample after normalization
+plotRLE(uq, col= colLib, outline = FALSE, las = 3, ylim = c(-0.5, 0.5), ylab = "Relative Log Expression", cex.axis = 1, cex.lab = 1)
+
+###Plot samples using PCA
+plotPCA(uq, col = colLib, cex = 1, cex.axis = 1, cex.lab = 1, xlim = c(-0.75, 0.75), ylim = c(-0.75, 0.75))
+
+###What does PC1 separate? A biological or technical condition?
+
+```
+###Run DEG expression and check if things make sense
+```{r}
+design = model.matrix(~x - 1)
+y = DGEList(counts = filtered, group = x)
+y = calcNormFactors(y, method = "upperquartile")
+y = estimateDisp(y, design, verbose = TRUE)
+fit = glmQLFit(y, design, robust = TRUE)
+
+# To compare SD6 (3) vs SD5 (2):
+qlf1 = glmQLFTest(fit, contrast = c(0, -1, 1))
+
+# To compare SD5 (2) vs HC (1)
+qlf2 = glmQLFTest(fit, contrast = c(-1, 1, 0))
+
+# To compare SD6 (3) vs HC (1)
+qlf3 = glmQLFTest(fit, contrast = c(-1, 0, 1))
+
+#calculate DE genes for SD6vs SD5, you can do this for every contrast
+topUQSD1 = topTags(qlf1, n = Inf)$table
+topUQSD2 = topTags(qlf2, n = Inf)$table
+topUQSD3 = topTags(qlf3, n = Inf)$table
+
+hist(topUQSD1$PValue, main = "", xlab = "p-value", breaks = 100, ylim = c(0, 1400))
+hist(topUQSD2$PValue, main = "", xlab = "p-value", breaks = 100, ylim = c(0, 1400))
+hist(topUQSD3$PValue, main = "", xlab = "p-value", breaks = 100, ylim = c(0, 1400))
+
+#check how many DE genes you got
+sum(topUQSD1$FDR < 0.05) ###SD5 vs. SD6
+sum(topUQSD2$FDR < 0.05) ###Control vs. SD5
+sum(topUQSD3$FDR < 0.05) ###Control vs. SD6
+```
+###Run RUVseq (Remove Unwanted Variation) on the data, using the design and knowledge of control samples
+```{r}
+#Generate a matrix: each row is a condition, and contains the columns of the data matrix corresponding to that condition
+groups = makeGroups(x)
+head(groups)
+
+
+###In RUVseq, k is a paramter representing the number of unwanted factors
+s = RUVs(x=uq, cIdx=rownames(uq), scIdx=groups, k= 1)
+```
+
+###Now we plot RLE and PCA plots, after normalizing for unwanted factors 
+```{r}
+plotRLE(s$normalizedCounts, col = colLib, outline = FALSE, las = 3, ylim = c(-0.5, 0.5), ylab= "Relative Log Expression", cex.axis = 1, cex.lab = 1)
+
+plotPCA(s$normalizedCounts, col = colLib, cex = 1, cex.axis = 1, cex.lab = 1, xlim = c(-0.75, 0.75), ylim = c(-0.75, 0.75))
+```
+###Run DEG analysis, but now including the factor from RUVseq
+```{r}
+design = model.matrix(~x + s$W - 1)   ###design matrix now includes RUVseq factor s$W
+y = DGEList(counts = filtered, group = x)
+y = calcNormFactors(y, method = "upperquartile")
+y = estimateDisp(y, design, verbose = TRUE)
+fit = glmQLFit(y, design, robust = TRUE)
+
+#To compare SD6 (3) vs SD5 (2) at k=1
+qlf1_ruv = glmQLFTest(fit, contrast = c(0, -1, 1, 0))
+
+# To compare SD5 (2) vs HC (1) at k=1
+qlf2_ruv = glmQLFTest(fit, contrast = c(-1, 1, 0, 0))
+
+# To compare SD6 (3) vs HC (1) at k=1
+qlf3_ruv = glmQLFTest(fit, contrast = c(-1, 0, 1, 0))
+
+#calculate DE genes for SD6vs SD5, you can do this for every contrast
+topUQSD1 = topTags(qlf1_ruv, n = Inf)$table
+topUQSD2 = topTags(qlf2_ruv, n = Inf)$table
+topUQSD3 = topTags(qlf3_ruv, n = Inf)$table
+
+hist(topUQSD1$PValue, main = "", xlab = "p-value", breaks = 100, ylim = c(0, 1400))
+hist(topUQSD2$PValue, main = "", xlab = "p-value", breaks = 100, ylim = c(0, 1400))
+hist(topUQSD3$PValue, main = "", xlab = "p-value", breaks = 100, ylim = c(0, 1400))
+
+#check how many DE genes you got
+sum(topUQSD1$FDR < 0.05) ###SD5 vs. SD6
+sum(topUQSD2$FDR < 0.05) ###Control vs. SD5
+sum(topUQSD3$FDR < 0.05) ###Control vs. SD6
+```
+#Workshop part 3 - Running DAVID (interactive web interface)
+https://david.ncifcrf.gov/summary.jsp
+
+
+
