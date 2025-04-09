@@ -1,0 +1,361 @@
+---
+title: "Spatial Transcriptomics"
+subtitle: "GR6060: Genomics and Machine Learning in Neuroscience"
+author: "Hans-Ulrich Klein"
+date: "10/25/2023"
+output: html_document
+---
+
+```{r Setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Introduction
+This practical session will outline a typical spatial transcriptomics analysis
+workflow, including preprocessing, visualization, clustering, and marker gene
+detection. Several packages for analyzing spatial transcriptomic data in R
+exist. Here, we use a collection of Bioconductor packages. Parts of the
+workflow loosely follow the online book [Best Practices for Spatial
+Transcriptomics Analysis with Bioconductor](https://lmweber.org/BestPracticesST).
+
+
+## Dataset
+We will download a small spatial transcriptomic dataset of a single human
+cortical section. The dataset was generated on the Visium platform and
+preprocessed using the SpaceRanger software package. In addition to the
+transcriptomic data, the dataset includes an H&E image and a manual
+histological assignment of Visium spots to cortical layers.
+
+```{r}
+packages_to_install=c("SpatialExperiment","STexampleData","BayesSpace","ggspavis","scater","scran","bluster","pheatmap","gridExtra")
+BiocManager::install(setdiff(packages_to_install, rownames(installed.packages())))
+install.packages(setdiff(packages_to_install, rownames(installed.packages())))
+```
+
+
+```{r Libraries, message = FALSE}
+require(SpatialExperiment)
+require(STexampleData)
+require(BayesSpace)
+require(ggspavis)
+require(scater)
+require(scran)
+require(bluster)
+require(pheatmap)
+require(gridExtra)
+
+# BioC 3.18 is released today (Oct 25). If the following command does not work,
+# or if the spe object is missing spot annotation, please load the spe.Rdata
+# file provided in the Canvas course folder.
+spe <- Visium_humanDLPFC()
+if (!"in_tissue" %in% colnames(colData(spe))) {
+    load("spe.Rdata")  # load file from Canvas
+}
+```
+
+```{r Dataset}
+spe
+head(colData(spe))
+head(rowData(spe))
+
+plotVisium(spe, fill = "ground_truth", highlight = "in_tissue")
+table(spe$in_tissue)
+
+spe <- spe[, colData(spe)$in_tissue == 1]
+dim(spe)
+
+MOBP <- rowData(spe)$gene_name == "MOBP"
+spe$MOBP <- log2(assay(spe)[MOBP, ] + 1)
+plotVisium(spe, fill = "MOBP", palette = "red")
+```
+
+The data is organized in an object of the class *SpatialExperiment*, which
+inherits from *SingleCellExperiment*. The actual data is stored as a large
+matrix in the assay slot, and information about the spots and features is
+stored in the column data and row data slots, respectively. When we subset
+the spe object to contain only spots covered by tissue, the class ensures that
+the respective metadata is also removed. The class *SpatialExperiment* is
+suitable for gridded data generated, for example, by the Visium or STOmics
+platform. A related class, *MoleculeExperiment*, should be used when single
+RNA molecules are detected.
+
+**Exercise 1:** How many spots are annotated with the different cortical
+layers? Visualize the expression of the gene *PCP4*. Which layer demonstrates
+the highest *PCP4* levels? What is the median number of nuclei per spot?
+
+```{r Exercise1}
+table(spe$ground_truth, useNA = "always")
+
+PCP4 <- rowData(spe)$gene_name == "PCP4"
+spe$PCP4 <- log2(assay(spe)[PCP4, ] + 1)
+plotVisium(spe, fill = "PCP4", palette = "red")
+
+boxplot(spe$PCP4 ~ spe$ground_truth)
+
+quantile(spe$cell_count)
+```
+
+
+## Spot-level quality control
+
+We will calculate some basic QC measures at the spot level to detect potential
+outliers. The QC measures are identical to those used for single-cell data,
+including i) the number of Unique Molecule Identifiers (UMIs), ii) the number
+of detected genes, and iii) the percentage of mitochondrial reads. Overall,
+the quality of this section is very good, and there is no need to remove
+many spots.
+
+```{r QualityControl}
+mito <- grepl("(^MT-)|(^mt-)", rowData(spe)$gene_name)
+table(mito)
+
+spe <- addPerCellQC(spe, subsets = list(mito = mito))
+head(colData(spe))
+
+plotQC(spe, type = "scatter", 
+       metric_x = "cell_count", metric_y = "sum")
+
+plotQC(spe, type = "scatter", 
+       metric_x = "sum", metric_y = "detected")
+
+hist(spe$subsets_mito_percent)
+
+spe$logSum <- log2(spe$sum)
+plotSpots(spe, annotate ="logSum", size = 1)
+
+qc_umi <- spe$sum < 300
+qc_detected <- spe$detected < 200
+qc_mito <- spe$subsets_mito_percent > 30
+qc_cell_count <- spe$cell_count > 20
+
+spe$lowQuality <- qc_umi | qc_detected | qc_mito | qc_cell_count
+plotSpots(spe, annotate = "lowQuality", size = 1)
+sum(spe$lowQuality)
+spe <- spe[, !spe$lowQuality]
+```
+
+**Exercise 2:** A friend looks at your data and suggests removing all spots
+with less than 2,500 reads, as these spots contain little information but
+contribute noise to downstream analysis. Generate a plot showing which
+spots would be removed. Would you follow your friend's advice?
+
+```{r Exercise2}
+spe$stringentQC <- spe$sum < 2500
+plotSpots(spe, annotate = "stringentQC", size = 1)
+
+crosstab <- table(spe$stringentQC, spe$ground_truth)
+crosstab
+crosstab["TRUE", ] / colSums(crosstab)
+```
+
+
+## Normalization
+
+We calculate per-spot size factors to account for differences in library sizes.
+Subsequently, we log-transform the data.
+
+```{r Normalization}
+spe <- computeLibraryFactors(spe)
+hist(spe$sizeFactor)
+spe <- logNormCounts(spe)
+assayNames(spe)
+```
+
+## Highly-variable genes
+
+Downstream dimensionalty reduction methods often benefit from filtering out
+uninteresting genes. Here, we focus on genes that show variability
+across spots. We model the mean-variance relationship to extract the biological
+component of the variance, which is used to select genes.
+
+```{r VariableGenes}
+dec <- modelGeneVar(spe)
+fit <- metadata(dec)
+plot(fit$mean, fit$var,
+     xlab = "Mean of log-expression",
+     ylab = "Variance of log-expression")
+curve(fit$trend(x), col = "dodgerblue", add = TRUE, lwd = 2)
+
+topHvgs <- getTopHVGs(dec, n = 2000)
+```
+
+**Exercise 3:** Which gene has the largest "biological" variance? What factor
+likely drives the variance of these genes?
+
+```{r Exercise3}
+head(dec)
+rowData(spe)[which.max(dec$bio), ]
+boxplot(logcounts(spe)[which.max(dec$bio), ] ~ spe$ground_truth)
+plotVisium(spe, fill = "ENSG00000123560")
+```
+
+
+## Dimension reduction
+
+A principal component analysis will be performed on the 2,000 highly variable
+genes identified in the previous code block. These principal components (PCs)
+will be used for clustering in the next step. We will also apply the Uniform
+Manifold Approximation and Projection (UMAP) technique to the PCs to obtain
+a 2-dimensional representation useful for visualizing clustering results.
+
+```{r DimensionReduction}
+set.seed(1)
+spe <- runPCA(spe, subset_row = topHvgs)
+
+set.seed(1)
+spe <- runUMAP(spe, dimred = "PCA")
+colnames(spe@int_colData@listData$reducedDims@listData$UMAP)=c("UMAP1","UMAP2")   ###potential issue in package - need to add these column names to the UMAP coordinate matrix
+
+reducedDimNames(spe)
+
+plotDimRed(spe, type = "PCA", annotate = "ground_truth")
+plotDimRed(spe, type = "UMAP", annotate = "ground_truth")
+```
+
+**Exercise 4:** How many PCs were calculated? How much of the variance of
+the 2,000 highly-variable genes is captured the the PCs? Should all PCs be
+used for clustering? Hint: The matrix storing the PCs can be assessed using the
+``reducedDim()`` method. Look at the attributes of the matrix using
+``names(attributes(reducedDim(spe)))``.
+
+```{r Exercise4}
+dim(reducedDim(spe, "PCA"))
+names(attributes(reducedDim(spe, "PCA")))
+percVar <- attr(reducedDim(spe, "PCA"), "percentVar")
+sum(percVar)
+plot(x = seq_along(percVar), y = percVar)
+```
+
+
+## Clustering
+
+We will apply three different clustering algorithms to the first 15 principal
+components to cluster the spots. The first two algorithms, Walktrap and
+Louvain, are community detection algorithms frequently used to cluster
+single-cell data. Both methods are applied to a shared nearest neighbor
+graph. The third method, BayesSpace, has been designed to cluster spatial
+data and, unlike the other methods, it considers the spatial location
+of the spots. BayesSpace relies on an MCMC approach to estimate the model
+parameters. To save time, we limit the number of MCMC iterations to 
+10,000 after 1,000 burn-in iterations.
+
+```{r Clustering}
+d <- 15
+
+set.seed(123)
+spe$Walktrap <- clusterRows(reducedDim(spe)[, 1:d],
+  BLUSPARAM=NNGraphParam(cluster.fun = "walktrap", k = 20))
+
+set.seed(123)
+spe$Louvain <- clusterRows(reducedDim(spe)[, 1:d],
+  BLUSPARAM=NNGraphParam(cluster.fun = "louvain", k = 20,
+  cluster.args=list(resolution = 1)))
+
+
+spe <- spatialPreprocess(spe, platform="Visium", skip.PCA=TRUE)
+colData(spe)$row <- colData(spe)$array_row
+colData(spe)$col <- colData(spe)$array_col
+
+# This takes ~5min
+set.seed(123)
+spe <- spatialCluster(spe, q = 7, d = d, platform = "Visium", gamma = 3,
+                      nrep = 11000, burn.in = 1000, save.chain = FALSE)
+spe$BayesSpace <- factor(spe$spatial.cluster)
+
+
+grid.arrange(plotSpots(spe, annotate = "Walktrap") + ggtitle(""),
+             plotSpots(spe, annotate = "Louvain") + ggtitle(""),
+             plotSpots(spe, annotate = "BayesSpace") + ggtitle(""),
+             plotSpots(spe, annotate = "ground_truth") + ggtitle(""))
+
+grid.arrange(plotDimRed(spe, type = "UMAP", annotate = "BayesSpace") +
+                 ggtitle("BayesSpace") + theme(legend.pos = "none"),
+             plotDimRed(spe, type = "UMAP", annotate = "ground_truth") +
+                 ggtitle("Ground truth") + theme(legend.pos = "none"),
+             nrow = 1)
+```
+
+**Exercise 5:** Which clustering reflects the laminar structure of the cortex
+best? Does each BayesSpace cluster match exactly one manually annotated layer?
+If the overall goal is to achieve a cluster as similar as possible to the
+manual annotation, how could the BayesSpace clustering be further improved?
+
+```{r Exercise5}
+table(spe$BayesSpace, spe$ground_truth)
+```
+
+
+## Identifying marker genes
+
+Finally, we want to detect marker genes for our spatial clusters. Here, marker
+genes are genes that are highly transcribed in the cluster of interest compared
+to all other clusters. We will then create a plot with marker genes for
+cluster "4" to see whether this cluster transcribes genes associated with
+oligodendrocytes.
+
+```{r MarkerGenes}
+rownames(spe) <- rowData(spe)$gene_name
+markers <- findMarkers(spe, groups = spe$BayesSpace,
+                       test = "binom", direction = "up")
+
+cluster4 <- markers[["4"]]
+logFCs <- getMarkerEffects(cluster4[cluster4$Top <= 5, ])
+
+pheatmap(logFCs)
+```
+
+**Optional Exercise 6:** The Adjusted Rand Index (ARI) is a measure of the
+similarity between two clusterings. The ARI is standardized between -1 and 1.
+The larger the ARI, the more similar the two clusterings are. Use the R
+function below to calculate the ARIs between the clusterings derived above
+and the ground truth. Which clustering has the largest ARI? Implement some
+of the potential improvements discussed in Exercise 5 to achieve a larger ARI.
+
+```{r AdjRandIndex}
+adjRandIndex <- function (x, y) {
+  stopifnot(length(x) == length(y))
+  tab <- table(x,y)
+  if (all(dim(tab) == c(1,1))) return(1)
+  a <- sum(choose(tab, 2))
+  b <- sum(choose(rowSums(tab), 2)) - a
+  c <- sum(choose(colSums(tab), 2)) - a
+  d <- choose(sum(tab), 2) - a - b - c
+  ARI <- (a - (a + b) * (a + c)/(a + b + c + d)) /
+    ((a + b + a + c)/2 - (a + b) * (a + c)/(a + b + c + d))
+  return(ARI)
+}
+```
+
+```{r Exercise6}
+adjRandIndex(spe$Walktrap, spe$ground_truth)
+adjRandIndex(spe$Louvain, spe$ground_truth)
+adjRandIndex(spe$BayesSpace, spe$ground_truth)
+
+set.seed(123)
+spe <- spatialCluster(spe, q = 2, d = 15, platform = "Visium", gamma = 3,
+                      nrep = 11000, burn.in = 1000, save.chain = FALSE)
+spe$BayesSpace2Cluster <- factor(spe$spatial.cluster)
+plotSpots(spe, annotate = "BayesSpace2Cluster", size = 1)
+
+speGray <- spe[, spe$BayesSpace2Cluster == "1"]
+dec <- modelGeneVar(speGray)
+fit <- metadata(dec)
+topHvgs <- getTopHVGs(dec, n = 2000)
+speGray <- runPCA(speGray, subset_row = topHvgs)
+speGray <- spatialCluster(speGray, q = 6, d = 35, platform = "Visium", gamma = 2.5,
+                          nrep = 11000, burn.in = 1000, save.chain = FALSE)
+spe$BayesSpace2Step <- "WM"
+spe$BayesSpace2Step[spe$BayesSpace2Cluster == "1"] <- speGray$spatial.cluster
+spe$BayesSpace2Step <- factor(spe$BayesSpace2Step)
+plotSpots(spe, annotate = "BayesSpace2Step", size = 1)
+
+adjRandIndex(spe$BayesSpace2Step, spe$ground_truth)
+```
+
+
+## R session info
+
+```{r SessionInfo}
+sessionInfo()
+```
